@@ -1,0 +1,771 @@
+---
+title: "Análisis DALY"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message=FALSE, warning=FALSE)
+```
+
+```{r}
+library(readxl)
+library(knitr)
+library(dplyr)
+library(FactoMineR)
+library(factoextra)
+library(grid)
+library(gridExtra)
+library(mice)
+library(reshape2)
+library(ggplot2)
+library(GGally)
+library(ropls)
+library(pls)
+library(candisc)
+library(MASS)
+library(cluster)
+library(writexl)
+library(pROC)
+library(caret)
+```
+
+#INTRODUCCIÓN
+Tras la búsqueda de diferentes bases de datos que cumplieran con las exigencias y necesidades que nos plantea este proyecto, finalmente encontramos una que nos ofrecía un gran número de variables y de observaciones, aspecto fundamental para el desarrollo del mismo.
+
+Esta base de datos trata de mostrar información acerca del DALYs en diferentes poblaciones entre los años 1990 y 2019. Esta abreviatura hace referencia a “Disability-Adjusted Life Years” la cual es una medida utilizada en el campo epidemiológico y de la salud que trata de cuantificar la carga de una enfermedad en una población teniendo en cuenta tanto la mortalidad como la morbilidad causada por enfermedades o lesiones.
+
+En nuestra base de datos contamos con un total de 6150 observaciones, donde cada observación corresponde a un país en un año determinado. Cada país está representado 30 veces, debido a que se tienen datos desde 1990 hasta 2020 para cada uno de ellos. Por otra parte, nuestra BBDD está compuesta por 28 variables, 25 de ellas hacen referencia al DALY por el tipo de enfermedad, mientras que las de Entity, Code y Year hacen referencia al país, el código de dicho país y al año respectivamente.
+
+En la base de datos original había datos faltantes en el atributo ‘Code’ porque se medían valores de ciertas regiones que no tenían ningún código asignado. Sin embargo no planteamos realizar un análisis de los datos por regiones geográficas, realizaremos el análisis por países. 
+Tras esta explicación pasaremos a mostrar cada una de sus variables, con sus significado y el tipo que es.
+
+```{r}
+daly=read_excel("C:/Users/prado/OneDrive/Escritorio/2º GCD/MDP I/PROYECTO/Base_de_datos.xlsx")
+nombres_sin_comillas <- c("Pais", "Codigo", "Año", "Autolesion", "F_Naturaleza", "Conflictos", "Vio_IntPer", "Enf_Tropicales", "Consumo_sustancias", "Enf_cutanea", "Inf_Entericas", "Diabetes", "Enf_cardiovasculares", "Enf_digestivas", "Def_Nutricion", "Inf_Respiratorias", "Des_Neonatales", "Enf_Resp_Cronicas", "Otras_Enf", "Des_Maternos", "Les_NoInt", "Des_MuscEsc", "Neoplasmas", "Des_mentales", "Des_Neuro", "ETS", "Les_Transporte", "Enf_OrgSens")
+colnames(daly)=nombres_sin_comillas
+```
+
+Además, para el objetivo del PLS trabajamos con una base de datos que contiene valores del HDI para cada país desde 1990 a 2019.
+
+Ahora pasaremos a plantear los objetivos. En un primer momento, no teníamos los conocimientos suficientes para poder plantear adecuadamente los objetivos a seguir, es por ello que en la primera entrega de la base de datos no pudimos plantearlo adecuadamente. Sin embargo, según han ido avanzando las clases y hemos dado diferentes herramientas hemos podido plantear los siguientes objetivos:
+
+- Mediante un PCA reducir la dimensionalidad y comprender la naturaleza de nuestra base de datos.  Entendiendo las diferencias entre países según los valores DALY de distintas afecciones.
+
+- Agrupar las clases a las que pertenecen los distintos países mediante grupos formados por variables con un comportamiento parecido mediante clustering y poder agrupar los países en función del tipo que sean.
+
+- Confirmar los resultados creados por el clustering mediante un análisis discriminante de Fisher.
+
+- Clasificar por nivel de desarrollo según el índice de desarrollo humano (HDI), mediante un  PLS.
+
+
+#ANÁLISIS EXPLORATORIO Y PRE-PROCESADO
+Ninguna variable ha sido eliminada del modelo. Consideramos que todas son interesantes para el estudio que vamos a realizar, y ninguna tiene valores tan anómalos como para tener que descartarla.
+
+El único registro que hemos eliminado es el de Ruanda en el año 1994. Como se puede ver en el Anexo 2, esta observación tiene un valor de T^2 de Hotelling significativamente anómalo. Por ende, con tal de que no influya a las componentes principales y a futuros análisis, la eliminamos de la base de datos.
+
+```{r Analisis_exploratorios}
+variables = setdiff(colnames(daly), c("Pais", "Codigo", "Año"))
+
+datos_analisis = daly[, variables]
+datos_analisis = datos_analisis %>%  mutate_if(~ min(., na.rm = TRUE) == 0, ~ . + 1)
+```
+
+Realizando el análisis exploratorio, creamos un boxplot que muestra la variabilidad de cada variable. Como podemos ver, todas las variables tienen una pronunciada asimetría positiva.
+
+```{r}
+boxplot(datos_analisis, main="Boxplot de todas las variables DALY", 
+        ylab="Valor", las=2)
+```
+Para solucionar este problema, tras centrar las variables las logaritmizamos. Como se puede ver en el boxplot, corregimos considerablemente la asimetría.
+
+```{r}
+datos_log = datos_analisis %>% mutate_all(funs(log))
+boxplot(datos_log, main="Boxplot de las variables DALY transformadas", ylab="Valor (log)", las=2)
+```
+
+No escalamos las variables porque todas las variables numéricas están en las mismas unidades, y no queremos perder las diferencias de variabilidad entre variables.
+
+En la base de DALY no hay datos faltantes. En la base de datos del Índice de Desarrollo Humano que hemos usado para el PLS sí que hay datos faltantes. Cómo la tratamos para cruzarla con la base de datos de DALY, la añadimos antes de realizar el PLS y eliminamos todas las observaciones con datos faltantes.
+
+
+#PCA
+```{r, echo=FALSE}
+desc_daly = data.frame("variable" = colnames(daly),
+                       "tipo" = c("text", "text", "integer", rep("numerical", 25)), stringsAsFactors = FALSE)
+```
+
+```{r, echo=FALSE}
+cent=daly[4:28]
+cent = cent%>%  mutate_if(~ min(., na.rm = TRUE) == 0, ~ . + 1)
+```
+
+```{r, echo=FALSE}
+log <- cent %>%
+  mutate_if(is.numeric, list(~ log(.)))
+```
+
+```{r, echo=FALSE}
+log=scale(log, center=TRUE, scale=FALSE)
+log=as.data.frame(log)
+```
+
+```{r, echo=FALSE}
+log_daly = cbind(daly[1:3], log)
+```
+
+Iniciamos el Análisis de Componentes Principales, tomando a las tres primeras variables (Código, País y Año) como suplementarias para el modelo.
+
+```{r, echo=FALSE}
+res.pca <- PCA(log_daly, scale.unit = FALSE, graph = FALSE, ncp = 10, quali.sup=c(1,2,3))
+eig.val <- get_eigenvalue(res.pca)
+eig.val
+VPmedio = 100*(1/nrow(eig.val))
+VPmedio
+fviz_eig(res.pca, addlabels = TRUE) +
+  geom_hline(yintercept=VPmedio, linetype=2, color="red")
+```
+
+```{r}
+fviz_pca_var(res.pca, axes = c(1,2), repel = TRUE, col.var="contrib",gradient.cols = c("#00AFBB","#E7B800","#FC4E07"))
+```
+Según el criterio del codo y de la media, escogemos tres componentes principales para explicar la variabilidad de nuestro modelo.
+
+La primera dimensión contribuye considerablemente más que el resto de dimensiones. A grandes rasgos, vemos que la primera dimensión está influenciada principalmente por enfermedades como las ETS, Desordenes Maternos, Infecciones Entéricas y Enfermedades Tropicales.
+
+En cambio, otras variables como el consumo de sustancias y los desórdenes neuronales toman valores negativos en dichas componentes.
+
+Antes de realizar el análisis discriminante o el PLS, podemos suponer que esta componente diferencia entre enfermedades más propias de países desarrollados o subdesarrollados.
+
+El gráfico de scores [Anexo 2] no aporta información relevante dado el elevado número de observaciones.
+
+```{r}
+misScores = res.pca$ind$coord[,1:3]; misScores
+miT2 = colSums(t(misScores**2)/eig.val[1:3,1])
+miT2
+I = nrow(log_daly); I 
+F95 = 3*(I**2 - 1)/(I*(I - 3)) * qf(0.95, 4, I-3)
+F99 = 3*(I**2 - 1)/(I*(I - 3)) * qf(0.99, 4, I-3)
+plot(1:length(miT2), miT2, type = "p", xlab = "LOG_DALY", ylab = "T2")
+abline(h = F95, col = "orange", lty = 2, lwd = 2)
+abline(h = F99, col = "red3", lty = 2, lwd = 2)
+```
+Vemos que la observación 4505 es un outlier severo debido a su valor en la T2 de Hotelling. Eso quiere decir que el modelo está siendo modifcado significativamente para poder incluir a está observación. Revisando en nuestra base de datos apreciamos que está observación pertenece a Ruanda en el año 1994. Por lo tanto está observación se ve afectada por el genocidio de Ruanda, una masacre que aniquiló al 70% de la etnia tutsi y que no tiene comparación con ningún hecho ocurrido en los 30 años que abarca el dataset. Por lo tanto, consideramos que es más sensato eliminar está observación del modelo y volver a realizar el PCA.
+```{r}
+X = as.matrix(log)
+misLoadings = sweep(res.pca$var$coord[,1:3], 2, sqrt(res.pca$eig[1:3,1]),FUN ="/")
+myE = X - misScores %*% t(misLoadings)
+mySCR = rowSums(myE^2)
+plot(1:length(mySCR), mySCR, type = "l", main = "Distancia al modelo", ylab = "SCR", xlab = "Daly")
+g = var(mySCR)/(2*mean(mySCR))
+h = (2*mean(mySCR)^2)/var(mySCR)
+chi2lim = g*qchisq(0.95,df=h)
+chi2lim99 = g*qchisq(0.99,df=h)
+abline(h=chi2lim, col="orange",lty=2,lwd=2)
+abline(h=chi2lim99, col="red3",lty = 2, lwd=2)
+```
+Observamos que la observación 2331 es un outlier moderado, es decir, que no es explicada por el modelo. Esta observación corresponde al año 2010 en Haití, donde hubo un terremoto que supuso una gran tragedia humana en el país. Cómo no ha habido sucesos similares en los últimos 30 años esta observación no es explicada adecuadamente por el modelo. Al no ser un outlier severo no es necesario eliminarla.
+
+Cómo se puede comprobar en el Anexo 2, el modelo PCA generado sin el valor anómalo es idéntico al anterior.
+
+
+```{r, include=FALSE, fig.show="hide"}
+
+#Comenzamos ahora el clustering:
+#En primer lugar, calcularemos la matriz de distancias para nuestras observaciones, en este caso lo realizaremos con la medida de distancia euclídea:
+
+log=log_daly[, desc_daly$tipo=="numerical"]
+
+
+
+#Para decidir en cuántos clusters vamos a dividir nuestras observaciones vamos a utilizar diferentes métodos jerárquicos y de partición. Todos ellos basados en la distancia euclídea.
+
+#Elegimos esta medida de distancia porque para nuestro proyecto es más intersante agrupar observaciones con valores similares de DALY, es decir con una incidencia de las causas de mortalidad parecida, en vez de países que sigan la misma variación entre causas.
+
+
+midist <- get_dist(log_daly, stand = FALSE, method = "euclidean")
+
+### Modelos jerárquicos
+
+#### Método de WARD
+
+##### Gráfico de silhouette y de suma de cuadrados intra-cluster
+p1 = fviz_nbclust(x = log, FUNcluster = hcut, method = "silhouette", 
+                  hc_method = "ward.D2", k.max = 10, verbose = FALSE, 
+                  hc_metric = "euclidean") + labs(title = "Num. optimo clusters")
+p2 = fviz_nbclust(x = log, FUNcluster = hcut, method = "wss", 
+                  hc_method = "ward.D2", k.max = 10, verbose = FALSE, 
+                  hc_metric = "euclidean") + labs(title = "Num. optimo clusters")
+grid.arrange(p1, p2, nrow = 1)
+
+
+#Se aprecia que el máximo en el estadístico de Silhoutte se obtiene con dos clusters. No obstante, la suma de cuadrados es demasiado elevada para esta cantidad de clusters, por lo que decidimos pasar al siguiente número, con 3 clusters el estadístico de silhoutte es menor pero desciende la suma de cuadrados intra-cluster, teniendo un valor suficientemente pequeño, y al observar las tendencias posteriores, no hay tanta diferencia, por lo que este también podría ser una opción.
+
+#Ahora describiremos , una pequeña tabla con 2 y 3 clusters para este método, para ver como se distribuyen las observaciones y para posteriormente realizar los gráficos, con cada uno de los tipos.
+
+
+clust1 <- hclust(midist, method="ward.D2")
+grupos1 <- cutree(clust1, k=2)
+table(grupos1)
+
+grupos1b <- cutree(clust1, k=3)
+table(grupos1)
+
+### En este gráfico podemos observar 2 clusters:
+fviz_cluster(object = list(data=log, cluster=grupos1), stand = FALSE,
+             ellipse.type = "convex", geom = "point", show.clust.cent = FALSE,
+             labelsize = 8)  +
+  labs(title = "Modelo jerarquico + Proyeccion PCA",
+       subtitle = "Dist euclidea, Metodo Ward, K=2") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+### En este gráfico podemos observar 3 clusters
+fviz_cluster(object = list(data=log, cluster=grupos1b), stand = FALSE,
+             ellipse.type = "convex", geom = "point", show.clust.cent = FALSE,
+             labelsize = 8)  +
+  labs(title = "Modelo jerarquico + Proyeccion PCA",
+       subtitle = "Dist euclidea, Metodo Ward, K=3") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+#Conclusiones
+
+#Tras observar detenidamente ambos gráficos, observamos como se producen solapamientos en ambos, es decir, que no se separan adecuadamente con la primera y segunda dimensión, esto se puede deber a que representamos 30 años seguidos de muchos países, y puede ser que estos tengan distancias sean relativamente parecidas y se acaben solapando, también puede ocurrir por las proximidades en los paises donde se pueden producir las mismas catástrofes, guerras, enfermedades. De momento consideramos este método como secundario, ya que queremos obtener uno que consiga una mejor diferenciación entre ellos.
+
+
+#### Método de la Media
+
+##### Gráfico de silhouette y de suma de cuadrados intra-cluster
+
+p1 = fviz_nbclust(x = log, FUNcluster = hcut, method = "silhouette", 
+                  hc_method = "average", k.max = 10, verbose = FALSE, 
+                  hc_metric = "euclidean") + labs(title = "Num. optimo clusters")
+p2 = fviz_nbclust(x = log, FUNcluster = hcut, method = "wss", 
+                  hc_method = "average", k.max = 10, verbose = FALSE, 
+                  hc_metric = "euclidean") + labs(title = "Num. optimo clusters")
+grid.arrange(p1, p2, nrow = 1)
+
+
+#Según el método de la media apreciamos que a partir de 4 clusters el total de la suma de cuadrados intra-cluster es prácticamente idéntica. Por otro lado, en lo que respecta al estadístico silhoutte cuando hay dos clusters se llega a un óptimo. Viendo los dos gráficos, podemos pensar que las dos opciones óptimas son 2 o 4 clusters.
+#Con 2 clusters la silhoutte explicada es mayor, pero la suma de cuadrados intra-cluster es demasiado elevada.
+#Con 4 clusters ocurre lo contrario, con una silhoutte media ligeramente menor pero con menos suma de cuadrados.
+
+#Ahora describiremos , una pequeña tabla con 2 y 3 clusters para este método, para ver como se distribuyen las observaciones y para posteriormente realizar los gráficos, con cada uno de los tipos.
+
+
+clust2 <- hclust(midist, method="average")
+grupos2 = cutree(clust2, k = 2)
+table(grupos2)
+
+grupos2b = cutree(clust2, k = 4)
+table(grupos2b)
+
+
+#Según el método de la media apreciamos que a partir de 4 clusters el total de la suma de cuadrados intra-cluster es prácticamente idéntica. Por otro lado, en lo que respecta al estadístico silhoutte cuando hay dos clusters se llega a un óptimo. Viendo los dos gráficos, podemos pensar que las dos opciones óptimas son 2 o 4 clusters. Con 2 clusters la silhoutte explicada es mayor, pero la suma de cuadrados intra-cluster es demasiado elevada. Con 4 clusters ocurre lo contrario, con una silhoutte media ligeramente menor pero con menos suma de cuadrados.
+
+#En este gráfico podemos observar 2 clusters:
+
+
+fviz_cluster(object = list(data=log, cluster=grupos2), stand = FALSE,
+             ellipse.type = "convex", geom = "point", show.clust.cent = FALSE,
+             labelsize = 8)  +
+  labs(title = "Modelo jerarquico + Proyeccion PCA",
+       subtitle = "Dist euclidea, Metodo de la media, K=2") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+### En este gráfico podemos observar 4 clusters:
+
+fviz_cluster(object = list(data=log, cluster=grupos2b), stand = FALSE,
+             ellipse.type = "convex", geom = "point", show.clust.cent = FALSE,
+             labelsize = 8)  +
+  labs(title = "Modelo jerarquico + Proyeccion PCA",
+       subtitle = "Dist euclidea, Metodo de la media, K=4") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+
+#Conclusiones:
+
+#Al igual que ocurre en los gráficos obtenidos con Ward, se obtiene sobreposición también para 2 y 4 clusters, sin embargo en esta es menor que en la anterior. Tras observar ambos gráficos, consideramos que es más adecuado escoger 2 clusters en vez de 4, puesto que el solapamiento entre ellos existe pero es menor para nuestro gusto. Anteriormente ya hemos explicado la posibildad de solapamiento a que se debe.
+```
+
+
+# Análisis Clustering
+
+Para realizar el clustering hemos realizado diferentes modelos [Anexo 2], pero en la memoria únicamente mostraremos el obtenido con el método de k-medias. Para llegar hasta aquí, primero hemos tenido que calcular la matriz de distancias mediante la distancia euclídea, ya que nos interesa qué países están más cercanos en cuanto a su valor, porque para nuestro proyecto es más relevante agrupar observaciones con valores similares de DALY (Disability-Adjusted Life Years), es decir, con una incidencia de las causas de mortalidad parecida, en lugar de países que sigan la misma variación entre causas.
+
+
+## Gráfico de silhouette y de suma de cuadrados intra-cluster
+```{r}
+### Modelos de partición
+
+#### K-MEDIAS
+
+##### Gráfico de silhouette y de suma de cuadrados intra-cluster
+p1 = fviz_nbclust(x = log, FUNcluster = kmeans, method = "silhouette", 
+             k.max = 10, verbose = FALSE) +
+  labs(title = "K-means")
+p2 = fviz_nbclust(x = log, FUNcluster = kmeans, method = "wss", 
+             k.max = 10, verbose = FALSE) +
+  labs(title = "K-means")
+grid.arrange(p1, p2, nrow = 1)
+```
+
+Tras observar Silhouette, vemos que el valor medio más alto se obtiene con 2 clusters, pero tras observar la suma de cuadrados intra-cluster vemos que este presenta un valor todavía muy alto, por lo que consideramos adecuado descartar esta cantidad. Decidimos escoger 3, puesto que aunque tenga un valor de Silhouette menor, es bastante similar al valor máximo, y además su suma de cuadrados intra-cluster es muy inferior y más adecuada.
+
+Ahora describiremos, un **gráfico de scores** para observar cómo se distribuyen cada uno de los clusters:
+
+```{r}
+set.seed(100)
+clust3 <- kmeans(log, centers = 3, nstart = 20)
+table(clust3$cluster)
+```
+
+
+```{r}
+# En este gráfico podemos observar 3 clusters:
+fviz_cluster(object = list(data=log, cluster=clust3$cluster), stand = FALSE,
+             ellipse.type = "convex", geom = "point", show.clust.cent = FALSE,
+             labelsize = 8)  +
+  labs(title = "Modelo de partición + Proyeccion PCA",
+       subtitle = "Dist euclidea, Metodo k-Medias, K=3") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+```
+
+Tras analizar el gráfico, vemos que el solapamiento es mucho menor en comparación con los métodos anteriores y, por tanto, la explicación de los clusters es mejor, puesto que podemos diferenciarlos claramente. En esta visualización, se han identificado tres clusters utilizando el método de k-medias (k-means) con K=3, lo que ha permitido una mejor separación de los datos en el espacio de las componentes principales. Los puntos verdes (cluster 1), los triángulos azules (cluster 2) y los puntos rojos (cluster 3) muestran una mayor separación entre los clusters, lo que indica que este método proporciona una agrupación más clara y precisa. Además, la primera componente principal (Dim1) sigue siendo la que más contribuye a la variabilidad de los datos, explicando el 68.8% de la misma, mientras que la segunda componente principal (Dim2) explica un 8.8%.
+
+
+```{r, include=FALSE, fig.show="hide"}
+#### K-MEDOIDES
+
+##### Gráfico de silhouette y de suma de cuadrados intra-cluster
+
+p1 = fviz_nbclust(x = log, FUNcluster = pam, method = "silhouette", 
+             k.max = 10, verbose = FALSE) +
+  labs(title = "K-mediods")
+p2 = fviz_nbclust(x = log, FUNcluster = pam, method = "wss", 
+             k.max = 10, verbose = FALSE) +
+  labs(title = "K-mediods")
+grid.arrange(p1, p2, nrow = 1)
+
+
+#Tras observar el valor del índice de Silhouette, notamos que el valor medio más alto se obtiene con 2 clusters. Sin embargo, la suma de cuadrados intra-cluster sigue siendo muy alta en este caso, lo que nos lleva a descartar esta opción. Decidimos optar por 3 clusters, ya que, aunque el valor del índice de Silhouette es ligeramente menor que el máximo, sigue siendo bastante similar. Además, la suma de cuadrados intra-cluster es significativamente inferior y más adecuada. Aunque se podría considerar usar 4 clusters, hemos decidido no hacerlo debido a una considerable disminución en el valor medio del índice de Silhouette, lo que indica una peor calidad de los clusters formados.
+
+#Ahora describiremos , una pequeña tabla con 3 clusters para este método, para ver como se distribuyen las observaciones y para posteriormente realizar los gráficos de scores.
+
+clust4 <- pam(log, k = 3)
+table(clust4$clustering)
+
+fviz_cluster(object = list(data=log, cluster=clust4$clustering), stand = FALSE,
+             ellipse.type = "convex", geom = "point", show.clust.cent = FALSE,
+             labelsize = 8)  +
+  labs(title = "Modelo jerarquico + Proyeccion PCA",
+       subtitle = "Dist euclidea, Metodo K-Medoides, K=3") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+#Tras analizar el gráfico, vemos que el solapamiento es similar al método de k-medias, por lo que es menor en comparación con los métodos anteriores y, por tanto, la explicación de los clusters es mejor, puesto que podemos diferenciarlos claramente. Además, la primera componente principal (Dim1) sigue siendo la que más contribuye a la variabilidad de los datos, explicando el 68.8% de la misma, mientras que la segunda componente principal (Dim2) explica un 8.8%.
+
+```
+
+## Selección y validación de modelos
+```{r, include=FALSE, fig.show="hide"}
+plot(silhouette(grupos1, midist), col=rainbow(2), border=NA, main = "WARD")
+plot(silhouette(grupos1b, midist), col=rainbow(3), border=NA, main = "WARD")
+plot(silhouette(grupos2, midist), col=rainbow(2), border=NA, main = "AVERAGE")
+plot(silhouette(grupos2b, midist), col=rainbow(4), border=NA, main = "AVERAGE")
+plot(silhouette(clust3$cluster, midist), col=rainbow(3), border=NA, main = "K-MEDIAS")
+plot(silhouette(clust4$clustering, midist), col=rainbow(3), border=NA, main = "K-MEDOIDES")
+```
+
+```{r}
+plot(silhouette(clust3$cluster, midist), col=rainbow(3), border=NA, main = "K-MEDIAS")
+```
+
+Descartamos el método de Ward y el de la media por el elevado número de observaciones con valores negativos en el estadístico de Silhouette, es decir, observaciones clasificadas en cluster erróneos. Entre los métodos de partición de k-medias y k-medoides las diferencias son prácticamente inexistentes. Nos decantamos por el método de k-medias porque tiene un valor medio del estadístico de Silhoutte ligeramente superior.[Anexo 3]
+
+
+## Interpretación de los resultados obtenidos mediante PCA
+
+Vamos a realizar un PCA para ver qué variables han contribuido más a la determinación de clusters con el algoritmo de k-medias.
+
+Realizamos el PCA y obtenemos que la primera componente explica casi el 70% de los datos, por lo que tendrá una gran importancia:
+
+
+```{r}
+misclust = factor(clust3$cluster)#Convertimos a factor los clusters de k-medias para ver cómo se distribuye
+misclust = factor(clust3$cluster)
+miPCA = PCA(log, scale.unit = FALSE, graph = FALSE)
+eig.val = get_eigenvalue(miPCA)
+Vmedia = 100 * (1/nrow(eig.val))
+fviz_eig(miPCA, addlabels = TRUE) +
+  geom_hline(yintercept=Vmedia, linetype=2, color="red")
+```
+
+Graficamos las **contribuciones de las variables** para las diferentes dimensiones
+
+```{r}
+fviz_contrib(miPCA, choice="var", axes=c(1, 2, 3))
+```
+
+El gráfico muestra la contribución de diversas variables a las dimensiones 1, 2 y 3 en un análisis de componentes principales (PCA). Las barras representan el porcentaje de contribución de cada variable, con las “Enf_Tropicales” (enfermedades tropicales) siendo la que más contribuye, con más del 20%. La línea roja punteada indica el umbral de contribución promedio esperada (alrededor del 5%), destacando las variables que superan esta contribución promedio. Las variables más significativas después de “Enf_Tropicales” son “Des_Nutricio” (desnutrición) y “Enf_ETS” (enfermedades de transmisión sexual), entre otras. Esto sugiere que estas variables son las más influyentes en las primeras tres dimensiones del análisis.
+
+El hecho de que estas enfermedades o estos problemas sean tan importantes para la creación de las dimensiones, se puede deber a su gran variabilidad y a la diferencia de incidencia entre países, estas suelen tener mayor importancia en países subdesarrollados, produciendo graves problemas sobre estos y una gran cantidad de muertes, y por otra parte en los países más desarrollados se cuenta con protección ante estos, produciendo esa variabilidad.
+
+
+```{r}
+p1 = fviz_pca_ind(miPCA, geom = "point", habillage = misclust, addEllipses = FALSE, 
+             palette = rainbow(3))
+p2 = fviz_pca_var(miPCA)
+grid.arrange(p1, p2, nrow = 1)
+```
+
+Tras observar el gráfico de scores, vemos cómo es posible diferenciar los clusters únicamente con la primera dimesión, ya que aunque se produzcan algunos solapamientos la diferenciación entre ellos es muy buena. Tras obervar el gráfico de las variables, observamos como la primera dimensión está explicada por ‘Enf_Tropicales’, ‘Inf_Entericas’,‘Des_Maternos’ y ‘Des_Neonatales’ entre otras, por lo que la primera dimensión representa enfermedades relacionadas con países subdesarrollados, ya que son producto de infecciones y de falta de alimentación , y por tanto son variables que tienen una gran variabildad entre los diferentes pasies.. Por otra parte, en el caso de la segunda dimensión está explicada por ‘ETS’ y ‘Vio_IntPer’.
+
+```{r, include=FALSE, fig.show="hide"}
+p1 = fviz_pca_ind(miPCA, geom = "point", habillage = misclust, addEllipses = FALSE, axes = 3:4,
+             palette = rainbow(3))
+p2 = fviz_pca_var(miPCA, axes = 3:4)
+grid.arrange(p1, p2, nrow = 1)
+
+mediasCluster = aggregate(log, by = list("cluster" = misclust), mean)[,-1]
+rownames(mediasCluster) = paste0("c",1:3)
+kable(t(round(mediasCluster,2)))
+```
+
+```{r}
+matplot(t(mediasCluster), type = "l", col = rainbow(3), ylab = "", xlab = "", lwd = 2,
+        lty = 1, main = "Perfil medio de los clusters", xaxt = "n")
+axis(side = 1, at = 1:ncol(log_daly), labels = colnames(log_daly), las = 2)
+legend("topleft", as.character(1:3), col = rainbow(3), lwd = 2, ncol = 3, bty = "n")
+
+
+#Interpretación:
+
+#El primer grupo toma valores bajos en la mayoría de variables, exceptuando algunas como las autolesiones y el consumo de sustancias. El segundo grupo toma #valores cercanos a la medida en todas las variables. El tercer grupo, toma valores elevados en casi todas las variables, destacando las enfermedades #tropicales, las infecciones entéricas y las ETS entre otras. Podemos suponer que los grupos están asociados respectivamente a los países desarrollados, en vías #de desarrollo y subdesarrollados.
+
+
+#1.  **Cluster 1 (Rojo)**: Este cluster tiene puntuaciones relativamente bajas en variables como "Des_Nutricio" y "Des_Maternos," y puntuaciones altas en #"Les_Musces" y "Conflitos." Esto sugiere que los individuos o datos en este cluster tienden a presentar menos problemas de desnutrición y mortalidad materna, #pero tienen más incidencias de lesiones musculares y conflictos. Por lo que este cluster clasifica o agrupa países con guerras, ya que estas son conflictos en #las que se producen lesiones.
+
+#2.  **Cluster 2 (Verde)**: Este cluster muestra picos y valles más pronunciados en varias variables, indicando una mayor variabilidad. Tiene puntuaciones altas en "Enf_Tropicales," "Inf_Entericas," y "Des_Nutricio," lo que sugiere una mayor incidencia de enfermedades tropicales, infecciones entéricas y desnutrición. También muestra una baja incidencia en "ETS" y "Vio_IntPer." Esta clasifica países con gran incidencia de enfermedades y con un desarrollo menor.
+
+#3.  **Cluster 3 (Azul)**: Este cluster tiene puntuaciones más cercanas a cero para la mayoría de las variables, indicando que los individuos o datos en este cluster tienen valores promedio o equilibrados en comparación con los otros clusters. Esto sugiere una menor diferenciación en términos de las variables analizadas. Este clasifica los países desarrollados, ya que no hay valores muy altos en ninguna variable y por tanto es bastante razonable esto.
+```
+
+El gráfico muestra los perfiles medios de tres clusters identificados en un análisis de clustering. Cada línea representa un cluster diferente: el cluster 1 en rojo, el cluster 2 en verde y el cluster 3 en azul. El eje horizontal representa diferentes variables o factores (como “Autolesion,” “Conflitos,” “Enf_Tropicales,” etc.), mientras que el eje vertical representa la media de las puntuaciones normalizadas de estas variables dentro de cada cluster.
+
+Interpretación:
+El primer grupo toma valores bajos en la mayoría de variables, exceptuando algunas como las autolesiones y el consumo de sustancias. El segundo grupo toma valores cercanos a la medida en todas las variables. El tercer grupo, toma valores elevados en casi todas las variables, destacando las enfermedades tropicales, las infecciones entéricas y las ETS entre otras. Podemos suponer que los grupos están asociados respectivamente a los países desarrollados, en vías de desarrollo y subdesarrollados.
+
+
+```{r include=FALSE}
+daly<-cbind(log_daly, Cluster=misclust)
+```
+
+
+#Análisis Discriminante (método opcional)
+Vamos a realizar un análisis discriminante de nuestros datos. Para ello, primero llevaremos a cabo un pequeño tratamiento de la base de datos (BBDD) para adecuarla y poder analizarla correctamente. Dado que nuestra base de datos contiene datos continuos, vamos a hacer uso de una nueva columna llamada "cluster" para poder realizar el análisis discriminante. En esta columna, clasificamos los diferentes individuos en tres grupos distintos, como lo hicimos en el análisis de clustering anterior. Ahora, utilizaremos esta clasificación para intentar hacer predicciones utilizando el resto de las variables.
+Creamos una variable que contenga los nombres de columnas que nosotros queremos para poder entender adecuadamente los resultados que obtendremos posteriormente.
+```{r}
+daly <- daly[sample(nrow(daly)), ]
+```
+## Tablas de frecuencias
+
+Como vamos a hacer uso de la variable “Cluster” como variable respuesta, queremos conocer cómo se distribuye esta en frecuencia y porcentajes.
+
+
+
+```{r}
+ttt <- table(daly$Cluster)
+kable(ttt)
+```
+```{r}
+kable(100*ttt/sum(ttt))
+```
+```{r}
+set.seed(100)
+```
+
+
+```{r}
+daly$Cluster <- factor(daly$Cluster)
+```
+Como podemos observar, las clases no están perfectamente equilibradas, ya que para ello cada una tendría que poseer el 33.33% de las observaciones totales de la base, pero el desequilibrio es muy ligero por lo que podemos hacer uso de esta perfectamente.
+
+## Modelos
+
+Ahora, dividiremos la base de datos en dos partes: la primera se llamará 'train_daly' y contendrá el 80% de los datos, mientras que la segunda se llamará 'test_daly' y contendrá el 20% restante. Utilizaremos el primer data frame para entrenar el modelo que desarrollaremos a continuación y el segundo para probarlo. Aunque la cantidad de datos de cada uno será diferente, ya que como hemos dicho antes tienen distinto tamaño, la distribución es la misma, es decir contendrán el mismo porcentaje de observaciones de cada cluster.
+```{r}
+train <- createDataPartition(daly$Cluster, p=0.8, list=FALSE)
+head(train)
+```
+Ahora separamos lo que hemos explicado anteriormente, es decir el dataframe de ‘train’ y el de ‘test’
+```{r}
+train_daly <- daly[train,]
+test_daly <- daly[-train,]
+
+num <- table(train_daly$Cluster)
+perc <- 100*num/sum(num)
+kable(cbind(num, perc))
+```
+Para comprobar que se ha realizado correctamente la separación, volveremos a crear las tablas de frecuencias. Tras su creación, podemos observar que está creada correctamente y que esta tiene la misma distribución que la originales.
+
+Para poder ejecutar correctamente el modelo, tenemos que eliminar aquellas variables que sean de tipo texto, es decir, en este caso eliminaremos “Pais” ,“Codigo” y “Año”, ya que no nos son útiles para la clasificación
+```{r}
+train_daly <- train_daly[, -c(1:3)] 
+```
+A continuación, crearemos una nueva variable asociada a “train_daly”, que llamaremos “train_dalyEsc”. Esta contendrá los datos escalados, excepto los de la variable “Cluster”, ya que no tendría sentido escalar la variable que se utilizará para realizar la clasificación. En el mismo cuadro de código generamos también el modelo lineal discriminante sobre los datos de entrenamiento y evaluamos su bondad de clasificación sobre estos datos y sobre los datos test. En esta ocasión, utilizaremos la función lda directamente para generar el modelo, en lugar de la librería caret, y no realizaremos validación cruzada sobre los datos de entrenamiento.
+```{r}
+set.seed(100)
+train_dalyESC = train_daly
+train_dalyESC[,-c(ncol(train_daly))] = scale(train_daly[,-c(ncol(train_daly))], scale=TRUE, center=FALSE)  
+modeloTR = lda(Cluster ~ ., data = train_dalyESC, CV=FALSE)  
+modeloTR
+```
+
+```{r}
+modeloTR$prior
+```
+```{r}
+modeloTR$means
+```
+
+```{r}
+head(modeloTR$scaling)
+```
+Tras observar los resultados obtenidos en las anteriores salidas, vemos que la traza de la primera función discriminante es la más significativa, puesto que es la que mayor valor tienen de las dos (LD1=0.8237 > LD2=0.1763), por lo que seguramente será muy importante a la hora de separar los grupos en la clasificación, a continuación realizaremos un mapa que evidencia esto. Por otra parte cabe destacar que Desorden Muscular-Esquelético, la variable que tiene más influencia para clasificar una observación en un cluster, ya que su valor es el más alto, pero este es negativo(-1.39), cosa que indica que la variable es crucial para la discriminación entre los grupos y que existe una relación inversa entre la variable y la función discriminante.
+
+
+Tras realizar la función discriminante para los datos de “train_dalyEsc” y observar sus resultados, ahora crearemos matrices de confusiones para observar cuáles son los resultados de los índices y cómo de bien clasifican los datos estos, para ello primero realizaremos el tratamiento que hemos hecho antes con “train_daly”, pero para “test_daly”
+
+```{r}
+test_daly <- test_daly[, -c(1:3)] 
+```
+Creación de la matriz de confusión para los datos obtenidos con el primer modelo, es decir, los datos de “train_daly”:
+```{r}
+set.seed(100)
+test_dalyESC = test_daly
+test_dalyESC[,-c(ncol(test_daly))] = scale(test_daly[,-c(ncol(test_daly))], scale=TRUE, center=FALSE)
+```
+Vemos que los valores obtenidos en los índices para las tres clases son muy altos, por encima del 0.95 en sensibilidad y especifidad, además la aproximación es del 0.9624 por lo que sí que podemos probarlo con los datos de tes, aunque hayan algunas clasificaciones erróneas.
+
+```{r}
+dalyE = rbind(train_dalyESC, test_dalyESC)
+print(dalyE)
+plot.df <- data.frame(predict(modeloTR, dalyE)$x, "Outcome" = dalyE[["Cluster"]])
+library(ggplot2)
+ggplot(plot.df, aes(x = LD1, y = LD2, color = Outcome)) + geom_point()
+```
+
+Tras realizarlo en los datos de test los resultados son muy similares a los de train, por lo que la aproximación es bastante buena, con una valor de accuracy del 0.9569, lo que significa que las malas clasificaciones son muy bajas
+
+##Representación gráfica
+Ahora representaremos gráficamente las puntuaciones discriminantes (ahora en un gráfico de dos dimensiones) para todos los datos, para poder observar los resultados de una formas más visual:
+
+```{r}
+z = as.matrix(train_dalyESC[, -dim(train_dalyESC)[2]]) %*% modeloTR$scaling
+#quitamos la ultima columna, cuyo índice es igual al número de columnas de la matriz, que devuelve el segundo elemento de dim.
+
+plot(density(z[train_daly$Cluster == "2"]), col = 3, xlab = "z",
+     xlim = range(z), main = "", lwd = 2)
+
+
+lines(density(z[train_daly$Cluster == "1"]), col = 2, lwd = 2)
+lines(density(z[train_daly$Cluster == "3"]), col = 4, lwd = 2)
+
+abline(v = mean(z[train_daly$Cluster == "1"]), col = 2, lty = 2, lwd = 2)
+abline(v = mean(z[train_daly$Cluster == "2"]), col = 3, lty = 2, lwd = 2)
+abline(v = mean(z[train_daly$Cluster == "3"]), col = 4, lty = 2, lwd = 2)
+```
+Observamos cómo la primera función discriminante separa muy bien los tres clusters, no de manera perfecta, pero sí con una alta precisión tal y como hemos visto anterirormente. Por otra parte LD2 no se considera necesaria, ya que en ella se solapan los tres cluseters y la representación no es muy buena. Así pues, en este ejemplo, nos quedaríamos únicamente con la función LD1
+
+##Contribuciones
+
+Variables que más han contribuido a clasificar.
+```{r}
+myDaly = modeloTR$scaling[,1]
+barplot(sort(abs(myDaly), decreasing = TRUE), las = 2, cex.names = 0.75)
+```
+
+En el gráfico superior, hemos representado la contribución de las variables en la función discriminante 1. En este podemos observar que hay dos variables muy superiores al resto en cuanto a la aportación sobre la primera función discriminante: Des_MuscEsc y Des_Maternos. El hecho de que estas variables tengan un valor tan superior al del resto de variables en cuanto a la separación de los grupos en la primera función discriminante nos podría indicar que son dos variables a tener muy en cuenta. Estas variables son cruciales para la diferenciación de los grupos, sugiriendo que las diferencias en desórdenes musculoesqueléticos y desórdenes maternos son las más determinantes para separar los grupos en este análisis. Por lo tanto, deben ser consideradas prioritarias tanto en la interpretación de los resultados como en la toma de decisiones estratégicas en cuanto a tomar acción en estos ámbitos
+
+Realizamos boxplot de las variables que mejor y peor clasifican, para observar su valor en cada uno de los clusters.
+```{r}
+par(mfrow = c(1,2))
+boxplot(Des_MuscEsc ~ Cluster, data = train_daly, col = "grey", notch = TRUE)
+boxplot(Des_Neonatales ~ Cluster, data = train_daly, col = "grey", notch = TRUE)
+```
+Tras observar los gráficos vemos que los box-plots están bien diferenciados en cada uno de los clusters, por lo que ambas variables(`Des_MuscEsc’,‘Des_Neonatales’) son de utilidad para diferenciar los grupos. Pese a que ambas son buenas en cuanto a la separación de grupos, la que más importancia y más aporta en este aspecto es la primera tal y como hemos podido ver antes.
+
+
+#PLS
+Recogemos los datos del Índice de Desarrollo Humano, que cruzaremos con nuestra base de datos para intentar obtener conclusiones
+```{r}
+hdi <- read.csv("hdi.csv")
+hdi <- hdi[1:195,] #Solo escogemos países no regiones
+```
+
+Corregimos los nombres de ciertos paises para que coinciden con los de la base de datos del DALY.
+
+```{r}
+paises_hdi <- unique(hdi$country)
+paises_hdi[21]<-"Bolivia"
+paises_hdi[25]<-"Brunei"
+paises_hdi[40]<-"Congo"
+paises_hdi[42]<-"Cote d'Ivoire"
+paises_hdi[57]<-"Eswatini"
+paises_hdi[80]<-"Iran"
+paises_hdi[91]<-"North Korea"
+paises_hdi[92]<-"South Korea"
+paises_hdi[95]<-"Laos"
+paises_hdi[114]<-"Micronesia"
+paises_hdi[115]<-"Moldova"
+paises_hdi[135]<-"Palestine"
+paises_hdi[171]<-"Syria"
+paises_hdi[173]<-"Tanzania"
+paises_hdi[180]<-"Turkey"
+paises_hdi[191]<-"Venezuela"
+paises_hdi[192]<-"Vietnam"
+```
+
+```{r}
+paises_daly <- unique(daly$Pais)
+```
+
+```{r}
+daly_pls <- daly
+daly_pls$HDI <- rep(NA, length(daly_pls$Autolesion))
+daly_pls <- subset(daly_pls, select = -Cluster)
+```
+
+
+```{r}
+for (i in 1:length(paises_hdi)){
+  pais <- paises_hdi[i]
+  if (pais %in% paises_daly){
+    fila_hdi <- hdi[i,3:32]
+    col_hdi <- as.numeric(fila_hdi)
+    fila_pais <- which(daly_pls$Pais==pais)
+    j=1
+    for (fila in fila_pais){
+      daly_pls[fila, 29] <- col_hdi[j]
+      j=j+1
+    }
+  }
+}
+```
+
+Una vez hemos introducido el HDI en los datos, procedemos a realizar un modelo PLS. El objetivo de este modelo es predecir el nivel de desarrollo según el HDI a partir de los valores de DALY de distintas causas de mortalidad o enfermedades. Puesto que el objetivo es discrimar que observaciones tienen mayores probabilidades de estar en un determinado nivel, realizamos un modelo PLS-DA o discriminante.
+
+Dado que solo tenemos una variable respuesta, esta no puede tener valores nulos, por lo que eliminamos todas las observaciones con valores faltantes en la variable respuesta.
+
+Antes de realizar el análisis, definimos los niveles de desarrollo que vamos a tener en consideración.
+0-0.45: Subdesarrollado
+0.45-0.7:En vías de desarrollo
+0.7-1: Desarrollado
+```{r}
+set.seed(24)
+daly_pls <- subset(daly_pls, !is.na(daly_pls$HDI))
+daly_pls$Desarrollo <- cut(daly_pls$HDI, breaks = c(-Inf, 0.45, 0.7, Inf), labels = c("Subdesarrollado", "En vías de desarrollo", "Desarrollado"))
+
+daly_pls$Desarrollo <- factor(daly_pls$Desarrollo)
+daly_pls <- daly_pls[sample(nrow(daly_pls)), ]
+```
+
+Puesto que tenemos 5060 observaciones, vamos a usar el 60% como entrenamiento y el 40% como prueba de nuestro modelo.
+```{r}
+trainFilas = createDataPartition(daly_pls$Autolesion, p=0.75, list=FALSE)
+
+Xtrain=daly_pls[trainFilas, 4:28]
+Ytrain=daly_pls[trainFilas, "Desarrollo"]
+
+Xtest=daly_pls[-trainFilas,4:28]
+Ytest=daly_pls[-trainFilas, "Desarrollo"]
+```
+
+Realizamos un modelo PLS-DA con validación cruzada 100-fold con los siguientes resultados:
+```{r}
+myplsC = opls(x = Xtrain, y = Ytrain, predI = NA, crossvalI = 100, scaleC = "standard",
+             fig.pdfC = "none", permI = 30)
+```
+Apreciamos que con X componentes el modelo se ajusta bien al conjunto de variables predictoras, pero no consigue valores completamente satisfactorios de bondad de ajuste y predicción para la variable respuesta. Como podemos ver, modificando el número de componentes no obtenemos cambios significativos.
+
+```{r}
+maxNC = min(dim(Xtrain))
+myplsC = opls(x = Xtrain, y = Ytrain, predI = maxNC, crossvalI = 100, scaleC = "standard", fig.pdfC = "none")
+plot(1:maxNC, myplsC@modelDF$`R2Y(cum)`, type = "o", pch = 16, col = "blue3",
+     lwd = 2, xlab = "Components", ylab = "", main = "PLS-DA model", ylim = c(0,1))
+lines(1:maxNC, myplsC@modelDF$`Q2(cum)`, type = "o", pch = 16, col = "red3",
+      lwd = 2)
+abline(h = 0.5, col = "red3", lty = 2)
+legend("bottomleft", c("R2Y", "Q2"), lwd = 2, 
+       col = c("blue3", "red3"), bty = "n")
+```
+
+```{r}
+myplsC = opls(x = Xtrain, y = Ytrain, predI = 6, crossvalI = 100, scaleC = "standard", permI = 30)
+```
+
+```{r}
+par(mfrow = c(1,2))
+plot(x = myplsC, typeVc = "x-score", parCompVi = c(1, 2), 
+     parLabVc = rep("x", nrow(Xtrain)))
+
+plot(x = myplsC, typeVc = "xy-weight",
+     parCexN = 0.8, parCompVi = c(1, 2), parPaletteVc = NA, 
+     parTitleL = TRUE, parCexMetricN = NA)
+```
+
+Estudiando los gráficos de scores y weights, apreciamos que el modelo es capaz de discriminar los grupos para la mayoría de observaciones, pero las zonas comunes compartidas entre países en vías de desarrollo con 
+países desarrollados o subdesarrollados son demasiado amplias.
+
+Esto provoca que si una observación cae en esas zonas comunes, el modelo tenga problemas para predecir a que grupo pertenece.
+
+Teniendo en cuenta que un país puede cambiar su categoría modificando una décima su Índice de Desarrollo Humano, comprendemos que el modelo tenga estos problemas en los límites entre grupos puesto que el desarrollo no es una variable discreta sino continua.
+
+Del mismo modo, el modelo consigue diferenciar perfectamente las observaciones de países subdesarrollados de las de países desarrollados.
+
+Analizando el gráfico de weights vemos que los países desarrollados están correlacionados positivamente con un grupo de afecciones y correlacionados negativamente con el grupo de afecciones asociado a los países subdesarrollados.
+
+Por otro lado, los países en vías de desarrollo están correlacionados con un abanico de afecciones que comprende algunas propias de los países desarrollados y otras propias de los subdesarrollados; por lo que se entiende que comparte zonas comunes con estos grupos.
+
+```{r}
+par(mfrow = c(1,2))
+plot(x = myplsC, typeVc = "x-score", parCompVi = c(1, 3),
+     parLabVc = rep("x", nrow(Xtrain)))
+
+plot(x = myplsC, typeVc = "xy-weight",
+     parCexN = 0.8, parCompVi = c(1, 3), parPaletteVc = NA, 
+     parTitleL = TRUE, parCexMetricN = NA)
+```
+
+Observamos que la primera y la segunda componente son las que relevantes a la hora de discriminar los distintos grupos. 
+
+```{r}
+coef_ordered <- myplsC@coefficientMN[order(abs(myplsC@coefficientMN[,1]), decreasing = TRUE), ]
+coef_transposed <- t(coef_ordered)
+
+barplot(coef_transposed, las = 2, main = "PLS regression coefficients")
+legend("topright", legend = unique(daly_pls$Desarrollo), fill = gray.colors(length(levels(daly_pls$Desarrollo))),
+       title = "Grupos")
+```
+
+Estos son los coeficientes de regresión PLS para clasificar cada grupo propuesto. Comparando este gráfico con los gráficos de weights, podemos discernir que variables y de qué manera están relacionados con cada grupo de la variable respuesta.
+
+
+```{r}
+mypred = predict(myplsC)
+library(caret)
+caret::confusionMatrix(mypred, Ytrain, positive = "Desarrollado")
+```
+
+La matriz de confusión muestra que el modelo clasifica con bastante precisión las observaciones pertenecientes a los tres grupos, pero suele cometer errores con los grupos limítrofes.
+
+Los valores de Accuracy y Kappa no son insatisfactorios una vez hemos comprendido la naturaleza de la base de datos y del modelo.
+
+En conclusión; el modelo de PLS-DA planteado sirve para diferenciar a los países según su nivel de desarrollo, pero hay que tener en cuenta que puede fallar si el país está cerca de cambiar su clasificación.
