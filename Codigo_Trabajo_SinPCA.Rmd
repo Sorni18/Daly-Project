@@ -1,0 +1,84 @@
+---
+title: "Code_MDPI"
+author: "Víctor Máñez"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(readxl)
+library(dplyr)
+library(FactoMineR)
+library(factoextra)
+library(grid)
+library(gridExtra)
+library(mice)
+library(reshape2)
+library(ggplot2)
+library(knitr)
+library(gridExtra)
+library(GGally)
+```
+```{r Carga_transformacion}
+#Lectura y Carga de datos
+daly = read_excel('Base_de_datos.xlsx')
+head(daly)
+
+#Creamos un vector para hacer el cambio de nombre de las columnas (nos ayudará a poder identificarlas mejor)
+nombres_sin_comillas <- c("Pais","Codigo","Año","Autolesion", "F_Naturaleza", "Conflictos", "Vio_IntPer", "Enf_Tropicales", "Consumo_sustancias", "Enf_cutanea", "Inf_Entericas", "Diabetes", "Enf_cardiovasculares", "Enf_digestivas", "Def_Nutricion", "Inf_Respiratorias", "Des_Neonatales", "Enf_Resp_Cronicas", "Otras_Enf", "Des_Maternos", "Les_NoInt", "Des_MuscEsc", "Neoplasmas", "Des_mentales", "Des_Neuro", "ETS", "Les_Transporte", "Enf_OrgSens")
+
+#Sustituimos los nombres de las columnas del Data Frame original por los de nuestro vector
+
+colnames(daly) = nombres_sin_comillas
+head(daly)
+
+#Añadimos una columna auxiliar que nos indique la situación de cada país
+
+developed_countries <- c("Australia", "Austria", "Belgium", "Canada", "Denmark", "Finland", "France", "Germany", "Greece", "Iceland", "Ireland", "Italy", "Japan", "Luxembourg", "Netherlands", "New Zealand", "Norway", "Portugal", "Spain", "Sweden", "Switzerland", "United Kingdom", "United States")
+developing_countries <- c("Albania", "Algeria", "Argentina", "Armenia", "Azerbaijan", "Bahrain", "Bangladesh", "Belarus", "Bosnia and Herzegovina", "Brazil", "Bulgaria", "Chile", "China", "Colombia", "Costa Rica", "Croatia", "Cuba", "Cyprus", "Czechia", "Dominican Republic", "Ecuador", "Egypt", "Estonia", "Fiji", "Georgia", "Hungary", "India", "Indonesia", "Iran", "Israel", "Jordan", "Kazakhstan", "Kenya", "Kuwait", "Latvia", "Lebanon", "Lithuania", "Malaysia", "Maldives", "Malta", "Mexico", "Moldova", "Montenegro", "Morocco", "Myanmar", "Nepal", "Nigeria", "Oman", "Pakistan", "Panama", "Paraguay", "Peru", "Philippines", "Poland", "Qatar", "Romania", "Russia", "Saudi Arabia", "Serbia", "Singapore", "Slovakia", "Slovenia", "South Africa", "South Korea", "Sri Lanka", "Taiwan", "Thailand", "Turkey", "Ukraine", "United Arab Emirates", "Uruguay", "Uzbekistan", "Venezuela", "Vietnam")
+
+clasificar_pais <- function(pais) {
+  if (pais %in% developed_countries) {
+    return("Desarrollado")
+  } else if (pais %in% developing_countries) {
+    return("En desarrollo")
+  } else {
+    return("Tercer mundo")
+  }
+}
+daly$Desarrollo <- sapply(daly$Pais, clasificar_pais)
+
+
+#Creación de un Data Frame auxiliar con la naturalza de cada variable, nos ayudará a la hora de realizar los análisis para poder separar las variables por tipo.
+desc_daly = data.frame("variable" = colnames(daly),
+                      "tipo" = c("text", "text", "integer", rep("numerical", 25), "text"), stringsAsFactors = FALSE)
+```
+
+```{r Analisis_exploratorios}
+#En primer lugar exploraremos el número de observaciones y variables con la función glimpse()
+glimpse(daly)
+
+#Comprobamos gráficamente cuál es la distribución de nuestros datos, que, pista, resulta ser muy anormal para cierto tipo de variables -por no decir casi todas-
+
+variables = setdiff(colnames(daly), c("Pais", "Codigo", "Año", "Desarrollo"))
+#variables_abreviado = abbreviate(variables, minlength = 5)
+datos_analisis = daly[, variables]
+datos_analisis = datos_analisis %>%  mutate_if(~ min(., na.rm = TRUE) == 0, ~ . + 1)
+#colnames(datos_analisis)=variables_abreviado
+
+#Aplicaremos un tratamiento efectivo en estos casos de asimetría positiva, aplacaremos los valores más altos usando el logaritmo añadiremos una constante muy pequeña (1) para que trabaje mejor con datos próximos o iguales a 0
+
+datos_log = datos_analisis %>% mutate_all(funs(log))
+boxplot(datos_analisis, main="Boxplot de todas las variables DALY", 
+        ylab="Valor", las=2)
+
+#Como vemos, al crear el boxplot vemos que los valores se nos han aplacado bastante, lo suficiente para poder proseguir con nuestro análisis
+boxplot(datos_log, main="Boxplot de las variables DALY transformadas", ylab="Valor (log)", las=2)
+
+nombres_enfermedades <- c("Autolesion", "F_Naturaleza", "Conflictos", "Vio_IntPer", "Enf_Tropicales", "Consumo_sustancias", "Enf_cutanea", "Inf_Entericas", "Diabetes", "Enf_cardiovasculares", "Enf_digestivas", "Def_Nutricion", "Inf_Respiratorias", "Des_Neonatales", "Enf_Resp_Cronicas", "Otras_Enf", "Des_Maternos", "Les_NoInt", "Des_MuscEsc", "Neoplasmas", "Des_mentales", "Des_Neuro", "ETS", "Les_Transporte", "Enf_OrgSens")
+c("ETS", "Les_Transporte", "Enf_OrgSens")
+
+#Extraemos con ggpairs algunas de las correlaciones de desordenes muy parecidos
+ggpairs(datos_analisis, columns = c("Des_Neonatales", "Des_Maternos", "Des_mentales", "Des_Neuro","Enf_OrgSens"), progress = FALSE) +
+  theme_bw() + labs(title = 'Mat. de corr. entre algunas variables')
+```

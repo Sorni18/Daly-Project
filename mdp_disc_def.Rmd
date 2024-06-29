@@ -1,0 +1,201 @@
+---
+title: "Discriminante"
+author: "prado"
+date: "2024-05-17"
+output: output:
+  html_document:
+      runmode: shiny
+      toc: true
+      number_sections: false
+      toc_depth: 2
+      toc_float:
+        collapsed: false
+        smooth_scroll: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Librerías
+
+```{r ,warning =FALSE}
+library(readxl)
+library(knitr)
+library(candisc)
+library(dplyr)
+library(FactoMineR)
+library(factoextra)
+library(grid)
+library(MASS)
+library(cluster)
+library(gridExtra)
+library(mice)
+library(reshape2)
+library(writexl)
+library(pROC)
+library(caret)
+library(ggplot2)
+```
+
+# Proyecto
+
+A lo largo de este documento, vamos a realizar un análisis discriminante de nuestros datos. Para ello, primero llevaremos a cabo un pequeño tratamiento de la base de datos (BBDD) para adecuarla y poder analizarla correctamente. Dado que nuestra base de datos contiene datos continuos, vamos a hacer uso de una nueva columna llamada "Cluster" para poder realizar el análisis discriminante. En esta columna, clasificamos los diferentes individuos en tres grupos distintos, como lo hicimos en el análisis de clustering anterior. Ahora, utilizaremos esta clasificación para intentar hacer predicciones utilizando el resto de las variables.
+
+### Tratamiento
+
+Creamos una variable que contega los nombres de columnas que nosotros queremos para poder entender adeacuadamente los resultados que obtendremos posteriormenete.
+
+```{r,warning = FALSE}
+daly<- read_excel("datos_discriminante.xlsx")#Carga de la BBDD
+
+nombres_sin_comillas <- c("Pais", "Codigo", "Año", "Autolesion", "F_Naturaleza", "Conflictos", "Vio_IntPer", "Enf_Tropicales", "Consumo_sustancias", "Enf_cutanea", "Inf_Entericas", "Diabetes", "Enf_cardiovasculares", "Enf_digestivas", "Def_Nutricion", "Inf_Respiratorias", "Des_Neonatales", "Enf_Resp_Cronicas", "Otras_Enf", "Des_Maternos", "Les_NoInt", "Des_MuscEsc", "Neoplasmas", "Des_mentales", "Des_Neuro", "ETS", "Les_Transporte", "Enf_OrgSens", "Cluster")#variables con nombres nuevos
+
+colnames(daly)=nombres_sin_comillas #Cambio nombres columnas
+```
+
+Como nuestra base de datos está ordenada por orden alfabético de los países y por año, vamos a realizar una ordenación aleatoria para que el modelo de entrenamiento y test no estén influenciados esto. Para ello vamos a hacer uso de la función sample que reordena los índices de las filas, creando una nueva versión del dataframe.
+
+```{r,warning=FALSE}
+daly <- daly[sample(nrow(daly)), ]
+```
+
+### Tablas de frecuencias
+
+Como vamos a hacer uso de la variable "Cluster" como variable respuesta, queremos conocer cómo se distribuye esta en frecuencia y porcentajes.
+
+```{r,warning}
+ttt <- table(daly$Cluster) #Tabla
+kable(ttt)
+```
+
+```{r,warning=FALSE}
+kable(100*ttt/sum(ttt)) #Frecuencias
+```
+
+Como podemos observar, las clases no están perfectamente equilibradas, ya que para ello cada una tendría que poser el 33.33% de las observaciones totales de la base, pero el desequilibrio es muy ligero por lo que podemos hacer uso de esta perfectamente.
+
+### Modelos
+
+Ahora, dividiremos la base de datos en dos partes: la primera se llamará 'train_daly' y contendrá el 80% de los datos, mientras que la segunda se llamará 'test_daly' y contendrá el 20% restante. Utilizaremos el primer data frame para entrenar el modelo que desarrollaremos a continuación y el segundo para probarlo. Aunque la cantidad de datos de cada uno será diferente, ya que como hemos dicho antes tienen distinto tamaño, la distribución es la misma, es decir contendrán el mismo porcentaje de observaciones de cada cluster.
+
+```{r,warning=FALSE}
+set.seed(100)
+daly$Cluster <- factor(daly$Cluster) #Lo transformamos a factor
+train <- createDataPartition(daly$Cluster, p=0.8, list=FALSE)
+head(train) #Nos muestra las 5 primeras
+```
+
+Ahora separamos lo que hemos explicado anteriormente, es decir el dataframe de 'train' y el de 'test'
+
+```{r,warning=FALSE}
+train_daly <- daly[train,]
+test_daly <- daly[-train,]
+```
+
+Para comprobar que se ha realizado correctamente la separación, volveremos a crear las tablas de frecuencias.
+
+```{r,warning=FALSE}
+num <- table(train_daly$Cluster)
+perc <- 100*num/sum(num)
+kable(cbind(num, perc))
+```
+
+Tras su creación, podemos observar que está creada correctamente y que esta tienen la misma distribución que la originales.
+
+Para poder ejecutar correctamente el modelo, tenemos que eliminar aquellas variables que sean de tipo texto, es deci, en este caso eliminaremos "Pais" ,"Codigo" y "Año", ya que no nos son útiles para la clasificación:
+
+```{r,warning=FALSE}
+train_daly <- train_daly[, -c(1:3)] 
+```
+
+A continuación, crearemos una nueva variable asociada a "train_daly", que llamaremos "train_dalyEsc". Esta contendrá los datos escalados, excepto los de la variable "Cluster", ya que no tendría sentido escalar la variable que se utilizará para realizar la clasificación. En el mismo cuadro de código generamos también el modelo lineal discriminante sobre los datos de entrenamiento y evaluamos su bondad de clasificación sobre estos datos y sobre los datos test. En esta ocasión, utilizaremos la función lda directamente para generar el modelo, en lugar de la librería caret, y no realizaremos validación cruzada sobre los datos de entrenamiento.
+
+```{r,warning=FALSE}
+set.seed(100) #Creamos una nueva semilla aleatoria
+train_dalyESC = train_daly 
+train_dalyESC[,-c(ncol(train_daly))] = scale(train_daly[,-c(ncol(train_daly))], scale=TRUE, center=FALSE)  #Escalado de los datos
+modeloTR = lda(Cluster ~ ., data = train_dalyESC, CV=FALSE)  
+modeloTR
+```
+
+```{r}
+modeloTR$prior
+```
+
+```{r}
+modeloTR$means
+```
+
+```{r}
+head(modeloTR$scaling)
+```
+
+Tras observar los resultados obtenidos en las anterirores salidas, vemos que la traza de la primera función discriminante es la más significativa, puesto que es la que mayor valor tienen de las dos (LD1=0.8237 \> LD2=0.1763), por lo que seguramente será muy importante a la hora de separar los grupos en la clasificación, a conitnuación realizaremos un mapa que evidencia esto. Por otra parte cabe destacar que Desorden Muscular-Esquelético, la variable que tiene más influencia para clasificar una observación en un cluster, ya que su valor es el más alto, pero este es negativo(-1.39), cosa que indica que la variable es crucial para la discriminación entre los grupos y que existe una relación inversa entre la variable y la función discriminante.
+
+Tras realizar la función discriminante para los datos de "train_dalyEsc" y observar sus resultados, ahora crearemos matrices de confusiones para observar cuáles son los resultados de los índices y cómo de bien clasifican los datos estos, para ello primero realizaremos el tratamiento que hemos hecho antes con "train_daly", pero para "test_daly"
+
+```{r,warning =FALSE}
+test_daly <- test_daly[, -c(1:3)] #Quitamos las variables de tipo texto
+```
+
+```{r,warning=FALSE}
+#Ahora crearemos los dataframe escalados para que se puedan interpretar correctamente
+set.seed(100)
+test_dalyESC = test_daly
+test_dalyESC[,-c(ncol(test_daly))] = scale(test_daly[,-c(ncol(test_daly))], scale=TRUE, center=FALSE)
+```
+
+Creación de la matriz de confusión para los datos obtenidos con el primer modelo, es decir, los datos de "train_daly":
+
+```{r,warning=FALSE}
+# Matriz de confusión para entrenamiento
+ajusteTR = predict(modeloTR)
+caret::confusionMatrix(ajusteTR$class, train_dalyESC$Cluster)
+```
+
+Vemos que los valores obtenidos en los índices para las tres clases son muy altos, por encima del 0.95 en sensibilidad y especifidad, además la aproximación es del 0.9624 por lo que sí que podemos probarlo con los datos de tes, aunque hayan algunas clasificaciones erróneas.
+
+```{r,warning=FALSE}
+ajusteTest = predict(modeloTR, test_dalyESC)
+caret::confusionMatrix(ajusteTest$class, test_dalyESC$Cluster)
+```
+
+Tras realizarlo en los datos de test los resultados son muy similares a los de train, por lo que la aproximación es bastante buena, con una valor de accuracy del 0.9569, lo que significa que las malas clasificaciones son muy bajas.
+
+#### Representación gráfica
+
+Ahora representaremos gráficamente las puntuaciones discriminantes (ahora en un gráfico de dos dimensiones) para todos los datos, para poder observar los resultados de una formas más visual:
+
+```{r,warning=FALSE}
+dalyE = rbind(train_dalyESC, test_dalyESC)
+plot.df <- data.frame(predict(modeloTR, dalyE)$x, "Outcome" = dalyE[["Cluster"]])
+ggplot(plot.df, aes(x = LD1, y = LD2, color = Outcome)) + geom_point()
+```
+
+#### 
+
+Observamos cómo la primera función discriminante separa muy bien los tres clusters, no de manera perfecta, pero sí con una alta precisión tal y como hemos visto anterirormente. Por otra parte LD2 no se considera necesaria, ya que en ella se solapan los tres cluseters y la representación no es muy buena. Así pues, en este ejemplo, nos quedaríamos únicamente con la función LD1.
+
+
+
+#### Contribuciones
+
+Variables que más han contribuido a clasificar:
+
+```{r}
+myDaly = modeloTR$scaling[,1]
+barplot(sort(abs(myDaly), decreasing = TRUE), las = 2, cex.names = 0.75)
+```
+
+En el gráfico superior, hemos representado la contribución de las variables en la función discriminante 1. En este podemos observar que hay dos variables muy superiores al resto en cuanto a la aportación sobre la primera función discriminante: `Des_MuscEsc` y `Des_Maternos`. El hecho de que estas variables tengan un valor tan superior al del resto de variables en cuanto a la separación de los grupos en la primera función discriminante nos podría indicar que son dos variables a tener muy en cuenta. Estas variables son cruciales para la diferenciación de los grupos, sugiriendo que las diferencias en desórdenes musculoesqueléticos y desórdenes maternos son las más determinantes para separar los grupos en este análisis. Por lo tanto, deben ser consideradas prioritarias tanto en la interpretación de los resultados como en la toma de decisiones estratégicas en cuanto a tomar acción en estos ámbitos.
+
+Realizamos boxplot de las variables que mejor y peor clasifican, para observar su valor en cada uno de los clusters.
+
+```{r}
+par(mfrow = c(1,2))
+boxplot(Des_MuscEsc ~ Cluster, data = train_daly, col = "grey", notch = TRUE)
+boxplot(Des_Neonatales ~ Cluster, data = train_daly, col = "grey", notch = TRUE)
+```
+
+Tras observar los gráficos vemos que los box-plots están bien diferenciados en cada uno de los clusters, por lo que ambas variables(\`Des_MuscEsc','Des_Neonatales') son de utilidad para diferenciar los grupos. Pese a que ambas son buenas en cuanto a la separación de grupos, la que más importancia y más aporta en este aspecto es la primera tal y como hemos podido ver antes.
